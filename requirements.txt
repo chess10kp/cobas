@@ -2,3 +2,7 @@ torch
 torchvision
 matplotlib
 opencv-python
+imageio[ffmpeg]
+ffmpeg-python
+tqdm
+seaborn
