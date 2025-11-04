@@ -1,0 +1,7 @@
+.env
+*venv
+*.pth
+*.MOV
+*.jpg
+.DS_Store
+*.wav
