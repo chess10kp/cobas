@@ -1,38 +1,28 @@
-# Multi-Pulse Ultrasonic Signal Generation & Acoustic Reflection Classification
+# Battery State Classification using Acoustic Reflection and Image Fusion
 
-This project provides a Python script to generate **multi-pulse ultrasonic signals** for acoustic reflection experiments and demonstrates training a **ResNet** model to classify object states (simulating Li-ion battery inspection) using reflected sound from water bottles.
+## Overview
+This project investigates how **acoustic reflections** and **visual cues** can be used together to determine the **State of Charge (SoC)** of a lithium-ion battery.
 
----
-
-## Usage
-
-1. **Configure parameters** in the script (examples):
-   - `sample_rate` — sampling rate in Hz  
-   - `pulse_duration` — duration of each pulse in seconds  
-   - `gap_duration` — gap between pulses in seconds  
-   - `total_duration` — total duration of the generated signal in seconds  
-   - `start_freq` — start frequency of sweep in Hz (e.g., 15000)  
-   - `end_freq` — end frequency of sweep in Hz (e.g., 19000)  
-   - `amplitude` — pulse amplitude (0.0 to 1.0)  
-   - `playback_delay` — silent delay after signal playback in seconds
-
-2. **Run the script**:  
-   `python ultrasonic_signal.py`
-
-3. **Generated outputs**:
-   - WAV file: `ultrasonic_multi_pulse_15s_with_delay.wav`  
-   - Waveform plot (Matplotlib) for visual inspection  
-   - Spectrogram image(s) used as ResNet input  
-   - Trained ResNet model file (e.g., `resnet_model.pth`) — optional, depending on your training code
+The system emits a near-ultrasonic waveform (15–19 kHz) from a laptop speaker and records the reflected signal using a smartphone microphone while also capturing images of the battery.  
+A **MultiModal ResNet** model then fuses both **audio (Mel-spectrogram)** and **image (RGB)** features to classify batteries into:
+> **Full · Half · Empty**
 
 ---
 
+## Key Features
+✅ Multimodal deep-learning model (audio + image fusion)  
+✅ Band-pass filtering (15–19 kHz) and spectral subtraction for noise reduction  
+✅ Automatic data extraction from `.MOV` videos (audio + image frames)  
+✅ Training visualization (t-SNE feature separation)  
+✅ Segment-level and video-level predictions with confusion matrix  
+
+---
 ## Experimental Setup
 
 - **Signal source:** MacBook speaker (plays the generated WAV file).  
 - **Targets:** Water bottles (full, half-full, empty).  
 - **Placement:** Bottles placed **10–15 cm** to the right of the MacBook speaker.  
-- **Recording device:** iPhone microphone placed close to the bottle; recorded at **different angles** (moved the iPhone relative to the bottle to capture angle-dependent reflections).  
+- **Recording device:** iPhone microphone placed close to the bottle; recorded at **different angles** (tilled the bottle at different angle).  
 - **Procedure (per recording):**
   1. Place bottle 10–15 cm right of MacBook speaker.  
   2. Position iPhone mic close to the bottle at chosen angle.  
@@ -40,29 +30,49 @@ This project provides a Python script to generate **multi-pulse ultrasonic signa
   4. Play the WAV file from the MacBook speaker.  
   5. Stop recording after the playback + delay.  
   6. Repeat for other angles and other bottle fill states.  
-- **Dataset:** ~10–13 recordings per class (full, half, empty) used for training; additional held-out recordings used for testing.  
-- **Model:** Convert recordings to spectrograms, train a ResNet (image-classification style) on those spectrograms to classify bottle states.
+
+## Project Structure
+```
+.
+├── audio_segments/ # 2-sec waveform chunks
+├── processed_audio/ # Filtered/cleaned signals (optional)
+├── raw_videos/ # Original recordings
+├── recorded_audio/ # Extracted .wav files
+├── recorded_images/ # Extracted .jpg frames
+│
+├── test_videos/
+│ ├── battery/ # Validation clips
+│ └── exxp/ # Experimental cases
+│
+├── notebooks/
+│ ├── generate_ultrasonic.ipynb # Create chirp waveform
+│ ├── final_training_fusion.ipynb # Train multimodal model
+│ └── final_testing_fusion.ipynb # Evaluate performance
+│
+│
+├── README.md
+├── requirements.txt
 
 ---
 
+## ⚙️ Setup & Installation
+1. Clone the repo and install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Output
+2. Ensure **ffmpeg** is installed on your system (for audio/video extraction).
 
-### Generated files
-- `ultrasonic_multi_pulse_15s_with_delay.wav` — the generated multi-pulse ultrasonic signal.  
-- `waveform_plot.png` (or inline Matplotlib figure) — visualization of generated time-domain waveform.  
-- `resnet_model.pth` — (example) saved ResNet model weights after training.
-
-### Model training & example results
-- **Training data:** 10–13 samples per class (full / half / empty).  
-- **Testing:** Held-out recordings recorded at different iPhone angles.  
-- **Performance:** Good and consistent classification accuracy observed (example below is illustrative).
-
-
-**Processing pipeline (high level):**  
-Play WAV (MacBook) → Capture reflected audio (iPhone) → Convert audio → Compute spectrogram → Train/Infer with ResNet
+3. Run the final_training_fusion.ipynb.
 
 ---
+
+## Model Architecture
+
+Audio (Mel Spectrogram) ──► ResNet18 ─┐
+                                       ├──► [Concat + FC] ─► Prediction
+Image (RGB Frame)       ─► ResNet18 ──┘
+
 
 ## Author
 

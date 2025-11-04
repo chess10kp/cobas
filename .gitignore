@@ -2,6 +2,6 @@
 *venv
 *.pth
 *.MOV
-*.wav
 *.jpg
 .DS_Store
+*.wav
