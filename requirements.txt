@@ -1,8 +1,9 @@
 torch
 torchvision
 matplotlib
-opencv-python
+opencv-python~=4.12.0.88
 imageio[ffmpeg]
 ffmpeg-python
 tqdm
 seaborn
+numpy~=2.2.6
