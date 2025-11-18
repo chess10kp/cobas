@@ -1,14 +1,17 @@
+from tqdm import tqdm
 import numpy as np
+import glob
 import cv2
 
 def crop_cell_from_frames(image_path: str,
                           output_dir: str = None,
                           chunk: int = None,
-                          overwrite_file: bool = False):
+                          overwrite_file: bool = False,
+                          verbose: bool = False):
 
     # Checks for output_dir or overwrite_file
     if not output_dir and not overwrite_file:
-        print("[ERROR]: OUTPUT DIR MUST BE PROVIDED OR ORIGINAL FILE OVERWRITTEN")
+        print("[ERROR]: OUTPUT DIRECTORY MUST BE PROVIDED OR ORIGINAL FILE OVERWRITTEN")
         return None
 
     # Reads image file
@@ -54,7 +57,8 @@ def crop_cell_from_frames(image_path: str,
 
         # Saves crop
         cv2.imwrite(image_path, crop)
-        print(f"{image_path} Overwritten Successfully!")
+        if verbose:
+            print(f"{image_path} Overwritten Successfully!")
     else: # Creates new file
 
         # Gets crop file name
@@ -62,12 +66,35 @@ def crop_cell_from_frames(image_path: str,
 
         # Saves crop
         cv2.imwrite(crop_output_path, crop)
-        print(f"CROP SAVED AT {crop_output_path}")
+        if verbose:
+            print(f"CROP SAVED AT {crop_output_path}")
+
+def crop_all_images(extracted_frames_dir: str,
+                    output_dir: str = None,
+                    chunk: int = None,
+                    overwrite_file: bool = False,
+                    verbose: bool = False):
+
+    # Sets the entire path
+    full_path = extracted_frames_dir + "/*"
+
+    # Lists all image files
+    files = glob.glob(full_path)
+
+    # Checks for files
+    if not files:
+        print("[ERROR]: EXTRACTED FRAMES DIRECTORY IS EMPTY!")
+        return None
+
+    for file_path in tqdm(files):
+        crop_cell_from_frames(image_path=file_path, output_dir=output_dir,
+                              chunk=chunk, overwrite_file=overwrite_file, verbose=verbose)
+
 
 if __name__ == "__main__":
-    ORIGINAL_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBas E-Energy/cobasFork/Visual/extracted_frames"
-    CROPPED_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBas E-Energy/cobasFork/Visual/cropped_frames"
+    ORIGINAL_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/video_frames"
+    CROPPED_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/cropped_frames"
 
-    crop_cell_from_frames(image_path='/Users/pedropaiva/Documents/Dev/Research/CoBas E-Energy/cobasFork/Visual/extracted_frames/100p_5m_frame007.jpg',
-                          chunk=20,
-                          output_dir=CROPPED_FRAMES_DIR)
+    crop_all_images(extracted_frames_dir=ORIGINAL_FRAMES_DIR,
+                    output_dir=CROPPED_FRAMES_DIR,
+                    verbose=False)
