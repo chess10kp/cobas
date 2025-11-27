@@ -42,9 +42,9 @@ def fast_split(video_path, out_audio_dir, out_frame_dir, skip_if_exists=True):
 
 if __name__ == "__main__":
 
-    RAW_VIDEOS_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/raw_dataset"
-    AUDIO_SEGMENTS_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/audio_segments"
-    VIDEO_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/video_frames"
+    RAW_VIDEOS_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/Dataset/raw_videos_5m"
+    AUDIO_SEGMENTS_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/Dataset/audio_segments_5m"
+    VIDEO_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/Dataset/video_frames_5m"
 
     raw_video_files = glob.glob(RAW_VIDEOS_DIR + "/*")
 

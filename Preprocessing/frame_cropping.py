@@ -92,9 +92,10 @@ def crop_all_images(extracted_frames_dir: str,
 
 
 if __name__ == "__main__":
-    ORIGINAL_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/video_frames"
-    CROPPED_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobasFork/Visual/cropped_frames"
+    ORIGINAL_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/Dataset/video_frames_5m"
+    CROPPED_FRAMES_DIR = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/Dataset/cropped_frames_5m"
 
     crop_all_images(extracted_frames_dir=ORIGINAL_FRAMES_DIR,
                     output_dir=CROPPED_FRAMES_DIR,
-                    verbose=False)
+                    verbose=False,
+                    chunk=10)
