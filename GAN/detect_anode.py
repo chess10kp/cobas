@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Locate circular battery anode coordinates using Sobel edge detection.
+"""Detect battery side edges as two line segments (4 points total) and visualize them.
 
-This script intentionally focuses on one task only:
-- find the circular anode center for provided images
-
-No rotation/alignment pipeline is used.
+This script focuses on locating the two long battery side edges in each input image.
+It returns the segment endpoints and can draw thick overlay lines for easy inspection.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -24,9 +23,16 @@ class DetectionResult:
     image: str
     ok: bool
     message: str
-    anode_x: Optional[float] = None
-    anode_y: Optional[float] = None
-    anode_r: Optional[float] = None
+    # Side edge A endpoints
+    x1a: Optional[float] = None
+    y1a: Optional[float] = None
+    x2a: Optional[float] = None
+    y2a: Optional[float] = None
+    # Side edge B endpoints
+    x1b: Optional[float] = None
+    y1b: Optional[float] = None
+    x2b: Optional[float] = None
+    y2b: Optional[float] = None
 
 
 def sobel_magnitude(gray: np.ndarray) -> np.ndarray:
@@ -39,16 +45,16 @@ def sobel_magnitude(gray: np.ndarray) -> np.ndarray:
 
 
 def battery_roi(gray: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
-    """Return tight ROI around battery-like region and ROI bounds (x1,y1,x2,y2)."""
+    """Return ROI around likely battery and ROI bounds (x1,y1,x2,y2)."""
     mag = sobel_magnitude(gray)
 
-    # Adaptive threshold tuned to keep stronger Sobel edges
-    thr = int(np.percentile(mag, 85))
-    thr = max(30, min(180, thr))
+    thr = int(np.percentile(mag, 84))
+    thr = max(28, min(185, thr))
     edge = (mag >= thr).astype(np.uint8) * 255
 
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    edge = cv2.morphologyEx(edge, cv2.MORPH_CLOSE, k_close, iterations=2)
+    edge = cv2.morphologyEx(
+        edge, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)), iterations=2
+    )
     edge = cv2.dilate(edge, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
 
     contours, _ = cv2.findContours(edge, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -56,125 +62,246 @@ def battery_roi(gray: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]
     if not contours:
         return gray.copy(), (0, 0, w, h)
 
-    # Select contour by area and centrality
-    cx0, cy0 = w / 2.0, h / 2.0
-    best = None
+    cx0, cy0 = w * 0.5, h * 0.5
+    best_rect = None
     best_score = -1.0
+
     for c in contours:
         area = float(cv2.contourArea(c))
-        if area < 0.002 * (w * h):
+        if area < 0.0015 * (w * h):
             continue
         x, y, cw, ch = cv2.boundingRect(c)
-        cx, cy = x + cw / 2.0, y + ch / 2.0
-        dist = np.hypot(cx - cx0, cy - cy0)
-        dist_penalty = 1.0 - min(1.0, dist / (0.8 * np.hypot(w, h)))
-        score = area * (0.6 + 0.4 * dist_penalty)
+        cx, cy = x + cw * 0.5, y + ch * 0.5
+        dist = math.hypot(cx - cx0, cy - cy0)
+        dist_pen = 1.0 - min(1.0, dist / (0.8 * math.hypot(w, h)))
+        score = area * (0.6 + 0.4 * dist_pen)
         if score > best_score:
             best_score = score
-            best = (x, y, cw, ch)
+            best_rect = (x, y, cw, ch)
 
-    if best is None:
+    if best_rect is None:
         return gray.copy(), (0, 0, w, h)
 
-    x, y, cw, ch = best
-    pad_x = int(0.15 * cw)
+    x, y, cw, ch = best_rect
+    pad_x = int(0.18 * cw)
     pad_y = int(0.20 * ch)
+
     x1 = max(0, x - pad_x)
     y1 = max(0, y - pad_y)
     x2 = min(w, x + cw + pad_x)
     y2 = min(h, y + ch + pad_y)
 
-    roi = gray[y1:y2, x1:x2]
-    return roi, (x1, y1, x2, y2)
+    return gray[y1:y2, x1:x2], (x1, y1, x2, y2)
 
 
-def find_anode_circle(roi_gray: np.ndarray) -> Optional[tuple[float, float, float]]:
-    """Detect most plausible anode circle inside ROI."""
+def _line_angle_deg(line: np.ndarray) -> float:
+    x1, y1, x2, y2 = [float(v) for v in line]
+    return math.degrees(math.atan2(y2 - y1, x2 - x1))
+
+
+def _line_length(line: np.ndarray) -> float:
+    x1, y1, x2, y2 = [float(v) for v in line]
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+def _line_midpoint(line: np.ndarray) -> tuple[float, float]:
+    x1, y1, x2, y2 = [float(v) for v in line]
+    return (0.5 * (x1 + x2), 0.5 * (y1 + y2))
+
+
+def _point_to_line_distance(pt: tuple[float, float], line: np.ndarray) -> float:
+    px, py = pt
+    x1, y1, x2, y2 = [float(v) for v in line]
+    vx, vy = x2 - x1, y2 - y1
+    wx, wy = px - x1, py - y1
+    denom = vx * vx + vy * vy
+    if denom <= 1e-6:
+        return math.hypot(px - x1, py - y1)
+    cross = abs(vx * wy - vy * wx)
+    return cross / math.sqrt(denom)
+
+
+def _signed_offset_from_line(line_ref: np.ndarray, line_other: np.ndarray) -> float:
+    """Signed perpendicular offset of line_other midpoint from line_ref."""
+    x1, y1, x2, y2 = [float(v) for v in line_ref]
+    ox, oy = _line_midpoint(line_other)
+    vx, vy = x2 - x1, y2 - y1
+    norm = math.hypot(vx, vy)
+    if norm <= 1e-6:
+        return 0.0
+    # left normal of ref direction
+    nx, ny = -vy / norm, vx / norm
+    dx, dy = ox - x1, oy - y1
+    return dx * nx + dy * ny
+
+
+def detect_side_segments(roi_gray: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Detect two long, near-parallel side edges in ROI.
+
+    Returns two line segments as arrays [x1,y1,x2,y2] in ROI coordinates.
+    """
     mag = sobel_magnitude(roi_gray)
-
-    # Threshold Sobel map for edge concentration
-    t = int(np.percentile(mag, 82))
-    t = max(25, min(170, t))
+    t = int(np.percentile(mag, 80))
+    t = max(20, min(170, t))
     edge = (mag >= t).astype(np.uint8) * 255
+
     edge = cv2.morphologyEx(
-        edge, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1
+        edge, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
+    )
+    edge = cv2.morphologyEx(
+        edge, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1
     )
 
     h, w = roi_gray.shape[:2]
-    rmin = max(6, int(0.06 * min(w, h)))
-    rmax = max(rmin + 2, int(0.35 * min(w, h)))
+    min_len = max(20, int(0.35 * max(w, h)))
 
-    circles = cv2.HoughCircles(
+    lines = cv2.HoughLinesP(
         edge,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(12, int(0.18 * min(w, h))),
-        param1=120,
-        param2=12,
-        minRadius=rmin,
-        maxRadius=rmax,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=max(40, int(0.10 * max(w, h))),
+        minLineLength=min_len,
+        maxLineGap=max(15, int(0.06 * max(w, h))),
     )
-    if circles is None:
+
+    if lines is None or len(lines) < 2:
         return None
 
-    # Choose circle with strongest Sobel support near circumference
-    cand = np.round(circles[0]).astype(np.int32)
-    best = None
-    best_score = -1.0
-    for x, y, r in cand:
-        if r <= 0:
+    cand = np.array([l[0] for l in lines], dtype=np.float32)
+
+    # Keep stronger (longer) lines
+    lengths = np.array([_line_length(l) for l in cand], dtype=np.float32)
+    order = np.argsort(-lengths)
+    cand = cand[order[: min(40, len(order))]]
+
+    best_pair = None
+    best_score = -1e9
+
+    for i in range(len(cand)):
+        li = cand[i]
+        len_i = _line_length(li)
+        if len_i < min_len:
             continue
-        mask = np.zeros_like(mag, dtype=np.uint8)
-        cv2.circle(mask, (x, y), int(r), 255, 2)
-        support = float(mag[mask > 0].mean()) if np.any(mask > 0) else 0.0
-        if support > best_score:
-            best_score = support
-            best = (float(x), float(y), float(r))
+        ai = _line_angle_deg(li)
 
-    return best
+        for j in range(i + 1, len(cand)):
+            lj = cand[j]
+            len_j = _line_length(lj)
+            if len_j < min_len:
+                continue
+            aj = _line_angle_deg(lj)
+
+            # angle diff modulo 180
+            d = abs(ai - aj) % 180.0
+            d = min(d, 180.0 - d)
+            if d > 10.0:
+                continue
+
+            # Prefer separation typical of battery thickness, avoid duplicate same-edge lines
+            sep = _point_to_line_distance(_line_midpoint(lj), li)
+            min_sep = max(8.0, 0.05 * min(w, h))
+            max_sep = 0.80 * min(w, h)
+            if sep < min_sep or sep > max_sep:
+                continue
+
+            # Penalize if they overlap too much on same offset sign (often duplicates)
+            off = _signed_offset_from_line(li, lj)
+            # score: long + parallel + reasonable separation
+            score = (len_i + len_j) - 2.0 * d + 0.35 * sep + 0.1 * abs(off)
+
+            if score > best_score:
+                best_score = score
+                best_pair = (li.copy(), lj.copy())
+
+    return best_pair
 
 
-def detect_anode(path: Path, debug_dir: Optional[Path]) -> DetectionResult:
+def detect_battery_edges(path: Path, debug_dir: Optional[Path]) -> DetectionResult:
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
         return DetectionResult(image=str(path), ok=False, message="failed to read image")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    roi, (x1, y1, x2, y2) = battery_roi(gray)
-    circ = find_anode_circle(roi)
+    roi, (rx1, ry1, rx2, ry2) = battery_roi(gray)
 
-    if circ is None:
-        return DetectionResult(image=str(path), ok=False, message="no circular anode detected")
+    pair = detect_side_segments(roi)
+    if pair is None:
+        return DetectionResult(image=str(path), ok=False, message="failed to find two side edge segments")
 
-    cx, cy, r = circ
-    gx, gy = cx + x1, cy + y1
+    la, lb = pair
+
+    # Convert ROI -> global coordinates
+    x1a, y1a, x2a, y2a = [float(v) for v in la]
+    x1b, y1b, x2b, y2b = [float(v) for v in lb]
+
+    x1a += rx1
+    y1a += ry1
+    x2a += rx1
+    y2a += ry1
+
+    x1b += rx1
+    y1b += ry1
+    x2b += rx1
+    y2b += ry1
 
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
-
         dbg = img.copy()
-        cv2.rectangle(dbg, (x1, y1), (x2, y2), (255, 180, 0), 2)
-        cv2.circle(dbg, (int(round(gx)), int(round(gy))), int(round(r)), (0, 0, 255), 2)
-        cv2.circle(dbg, (int(round(gx)), int(round(gy))), 3, (0, 255, 255), -1)
+
+        # ROI rectangle
+        cv2.rectangle(dbg, (rx1, ry1), (rx2, ry2), (255, 200, 0), 2)
+
+        # Thick line overlays
+        cv2.line(
+            dbg,
+            (int(round(x1a)), int(round(y1a))),
+            (int(round(x2a)), int(round(y2a))),
+            (0, 0, 255),
+            8,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            dbg,
+            (int(round(x1b)), int(round(y1b))),
+            (int(round(x2b)), int(round(y2b))),
+            (0, 255, 0),
+            8,
+            cv2.LINE_AA,
+        )
+
+        # Endpoints (4 points)
+        for (x, y), color in [
+            ((x1a, y1a), (0, 0, 255)),
+            ((x2a, y2a), (0, 0, 255)),
+            ((x1b, y1b), (0, 255, 0)),
+            ((x2b, y2b), (0, 255, 0)),
+        ]:
+            cv2.circle(dbg, (int(round(x)), int(round(y))), 6, color, -1)
+
         cv2.putText(
             dbg,
-            f"anode=({gx:.1f},{gy:.1f}) r={r:.1f}",
+            "Detected battery side edges",
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 0, 255),
+            0.9,
+            (50, 220, 255),
             2,
             cv2.LINE_AA,
         )
-        cv2.imwrite(str(debug_dir / f"{path.stem}_anode_debug.jpg"), dbg)
+        cv2.imwrite(str(debug_dir / f"{path.stem}_battery_edges_debug.jpg"), dbg)
 
     return DetectionResult(
         image=str(path),
         ok=True,
         message="ok",
-        anode_x=float(gx),
-        anode_y=float(gy),
-        anode_r=float(r),
+        x1a=x1a,
+        y1a=y1a,
+        x2a=x2a,
+        y2a=y2a,
+        x1b=x1b,
+        y1b=y1b,
+        x2b=x2b,
+        y2b=y2b,
     )
 
 
@@ -186,6 +313,7 @@ def collect_inputs(inputs: list[str]) -> list[Path]:
             out.append(p)
         else:
             out.extend(sorted(Path(".").glob(item)))
+
     uniq: list[Path] = []
     seen = set()
     for p in out:
@@ -198,9 +326,11 @@ def collect_inputs(inputs: list[str]) -> list[Path]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Detect circular battery anode coordinates")
+    parser = argparse.ArgumentParser(
+        description="Detect battery as two side-edge line segments (4 points) and visualize thick overlay lines"
+    )
     parser.add_argument("inputs", nargs="+", help="image files or glob patterns")
-    parser.add_argument("--debug-dir", default=None, help="save debug images here")
+    parser.add_argument("--debug-dir", default=None, help="save visualization images here")
     parser.add_argument("--json", action="store_true", help="print JSON one object per line")
     args = parser.parse_args()
 
@@ -212,12 +342,16 @@ def main() -> int:
     debug_dir = Path(args.debug_dir) if args.debug_dir else None
     rc = 0
     for p in images:
-        res = detect_anode(p, debug_dir)
+        res = detect_battery_edges(p, debug_dir)
         if args.json:
             print(json.dumps(res.__dict__, ensure_ascii=True))
         else:
             if res.ok:
-                print(f"{res.image}: anode=({res.anode_x:.1f}, {res.anode_y:.1f}) r={res.anode_r:.1f}")
+                print(
+                    f"{res.image}: "
+                    f"A=({res.x1a:.1f},{res.y1a:.1f})->({res.x2a:.1f},{res.y2a:.1f}) "
+                    f"B=({res.x1b:.1f},{res.y1b:.1f})->({res.x2b:.1f},{res.y2b:.1f})"
+                )
             else:
                 print(f"{res.image}: ERROR - {res.message}")
                 rc = 2
