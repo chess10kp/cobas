@@ -135,45 +135,18 @@ def _signed_offset_from_line(line_ref: np.ndarray, line_other: np.ndarray) -> fl
     return dx * nx + dy * ny
 
 
-def detect_side_segments(roi_gray: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """Detect two long, near-parallel side edges in ROI.
-
-    Returns two line segments as arrays [x1,y1,x2,y2] in ROI coordinates.
-    """
-    mag = sobel_magnitude(roi_gray)
-    t = int(np.percentile(mag, 80))
-    t = max(20, min(170, t))
-    edge = (mag >= t).astype(np.uint8) * 255
-
-    edge = cv2.morphologyEx(
-        edge, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
-    )
-    edge = cv2.morphologyEx(
-        edge, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1
-    )
-
-    h, w = roi_gray.shape[:2]
-    min_len = max(20, int(0.35 * max(w, h)))
-
-    lines = cv2.HoughLinesP(
-        edge,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=max(40, int(0.10 * max(w, h))),
-        minLineLength=min_len,
-        maxLineGap=max(15, int(0.06 * max(w, h))),
-    )
-
-    if lines is None or len(lines) < 2:
-        return None
-
-    cand = np.array([l[0] for l in lines], dtype=np.float32)
-
-    # Keep stronger (longer) lines
-    lengths = np.array([_line_length(l) for l in cand], dtype=np.float32)
-    order = np.argsort(-lengths)
-    cand = cand[order[: min(40, len(order))]]
-
+def _select_best_pair(
+    cand: np.ndarray,
+    min_len: float,
+    w: int,
+    h: int,
+    max_angle_diff: float,
+    min_sep_ratio: float,
+    max_sep_ratio: float,
+    angle_penalty: float,
+    sep_weight: float,
+    off_weight: float,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
     best_pair = None
     best_score = -1e9
 
@@ -191,29 +164,117 @@ def detect_side_segments(roi_gray: np.ndarray) -> Optional[tuple[np.ndarray, np.
                 continue
             aj = _line_angle_deg(lj)
 
-            # angle diff modulo 180
             d = abs(ai - aj) % 180.0
             d = min(d, 180.0 - d)
-            if d > 10.0:
+            if d > max_angle_diff:
                 continue
 
-            # Prefer separation typical of battery thickness, avoid duplicate same-edge lines
             sep = _point_to_line_distance(_line_midpoint(lj), li)
-            min_sep = max(8.0, 0.05 * min(w, h))
-            max_sep = 0.80 * min(w, h)
+            min_sep = max(8.0, min_sep_ratio * min(w, h))
+            max_sep = max(min_sep + 2.0, max_sep_ratio * min(w, h))
             if sep < min_sep or sep > max_sep:
                 continue
 
-            # Penalize if they overlap too much on same offset sign (often duplicates)
             off = _signed_offset_from_line(li, lj)
-            # score: long + parallel + reasonable separation
-            score = (len_i + len_j) - 2.0 * d + 0.35 * sep + 0.1 * abs(off)
+            score = (len_i + len_j) - angle_penalty * d + sep_weight * sep + off_weight * abs(off)
 
             if score > best_score:
                 best_score = score
                 best_pair = (li.copy(), lj.copy())
 
     return best_pair
+
+
+def detect_side_segments(roi_gray: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Detect two long, near-parallel side edges in ROI.
+
+    Returns two line segments as arrays [x1,y1,x2,y2] in ROI coordinates.
+    Uses strict pass first (better optical fit), then relaxed fallback (better recovery for t2).
+    """
+    mag = sobel_magnitude(roi_gray)
+    h, w = roi_gray.shape[:2]
+    scale = max(w, h)
+
+    # --- Pass 1: strict (preferred for optical images) ---
+    t1 = int(np.percentile(mag, 88))
+    t1 = max(35, min(205, t1))
+    edge1 = (mag >= t1).astype(np.uint8) * 255
+    edge1 = cv2.morphologyEx(
+        edge1, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
+    )
+    edge1 = cv2.morphologyEx(
+        edge1, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1
+    )
+
+    min_len1 = max(30, int(0.45 * scale))
+    lines1 = cv2.HoughLinesP(
+        edge1,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=max(55, int(0.14 * scale)),
+        minLineLength=min_len1,
+        maxLineGap=max(10, int(0.04 * scale)),
+    )
+    if lines1 is not None and len(lines1) >= 2:
+        cand1 = np.array([l[0] for l in lines1], dtype=np.float32)
+        lengths1 = np.array([_line_length(l) for l in cand1], dtype=np.float32)
+        order1 = np.argsort(-lengths1)
+        cand1 = cand1[order1[: min(40, len(order1))]]
+        strict_pair = _select_best_pair(
+            cand=cand1,
+            min_len=min_len1,
+            w=w,
+            h=h,
+            max_angle_diff=7.0,
+            min_sep_ratio=0.12,
+            max_sep_ratio=0.45,
+            angle_penalty=3.2,
+            sep_weight=0.25,
+            off_weight=0.08,
+        )
+        if strict_pair is not None:
+            return strict_pair
+
+    # --- Pass 2: fallback (recover weaker/shorter thermal-like edges, e.g. t2) ---
+    t2 = int(np.percentile(mag, 82))
+    t2 = max(24, min(185, t2))
+    edge2 = (mag >= t2).astype(np.uint8) * 255
+    edge2 = cv2.morphologyEx(
+        edge2, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
+    )
+    edge2 = cv2.morphologyEx(
+        edge2, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)), iterations=1
+    )
+
+    min_len2 = max(20, int(0.30 * scale))
+    lines2 = cv2.HoughLinesP(
+        edge2,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=max(36, int(0.10 * scale)),
+        minLineLength=min_len2,
+        maxLineGap=max(14, int(0.06 * scale)),
+    )
+    if lines2 is None or len(lines2) < 2:
+        return None
+
+    cand2 = np.array([l[0] for l in lines2], dtype=np.float32)
+    lengths2 = np.array([_line_length(l) for l in cand2], dtype=np.float32)
+    order2 = np.argsort(-lengths2)
+    cand2 = cand2[order2[: min(60, len(order2))]]
+
+    return _select_best_pair(
+        cand=cand2,
+        min_len=min_len2,
+        w=w,
+        h=h,
+        max_angle_diff=12.0,
+        min_sep_ratio=0.06,
+        max_sep_ratio=0.65,
+        angle_penalty=2.1,
+        sep_weight=0.30,
+        off_weight=0.06,
+    )
 
 
 def detect_battery_edges(path: Path, debug_dir: Optional[Path]) -> DetectionResult:
