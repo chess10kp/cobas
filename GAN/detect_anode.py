@@ -185,95 +185,163 @@ def _select_best_pair(
     return best_pair
 
 
-def detect_side_segments(roi_gray: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
+def detect_side_segments(roi_gray: np.ndarray, profile: str = "auto") -> Optional[tuple[np.ndarray, np.ndarray]]:
     """Detect two long, near-parallel side edges in ROI.
 
     Returns two line segments as arrays [x1,y1,x2,y2] in ROI coordinates.
-    Uses strict pass first (better optical fit), then relaxed fallback (better recovery for t2).
+    Uses filename-based threshold profiles:
+    - profile="o": stricter optical thresholds
+    - profile="t": older/relaxed thermal thresholds
+    - profile="auto": strict pass then relaxed fallback
     """
     mag = sobel_magnitude(roi_gray)
     h, w = roi_gray.shape[:2]
     scale = max(w, h)
 
-    # --- Pass 1: strict (preferred for optical images) ---
-    t1 = int(np.percentile(mag, 88))
-    t1 = max(35, min(205, t1))
-    edge1 = (mag >= t1).astype(np.uint8) * 255
-    edge1 = cv2.morphologyEx(
-        edge1, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
-    )
-    edge1 = cv2.morphologyEx(
-        edge1, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1
-    )
+    def run_pass(
+        percentile: float,
+        t_min: int,
+        t_max: int,
+        open_k: int,
+        close_k: int,
+        min_len_ratio: float,
+        hough_thresh_ratio: float,
+        hough_thresh_min: int,
+        max_gap_ratio: float,
+        max_gap_min: int,
+        max_angle_diff: float,
+        min_sep_ratio: float,
+        max_sep_ratio: float,
+        angle_penalty: float,
+        sep_weight: float,
+        off_weight: float,
+        top_k: int,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        t = int(np.percentile(mag, percentile))
+        t = max(t_min, min(t_max, t))
+        edge = (mag >= t).astype(np.uint8) * 255
+        edge = cv2.morphologyEx(
+            edge, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (open_k, open_k)), iterations=1
+        )
+        edge = cv2.morphologyEx(
+            edge, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (close_k, close_k)), iterations=1
+        )
 
-    min_len1 = max(30, int(0.45 * scale))
-    lines1 = cv2.HoughLinesP(
-        edge1,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=max(55, int(0.14 * scale)),
-        minLineLength=min_len1,
-        maxLineGap=max(10, int(0.04 * scale)),
-    )
-    if lines1 is not None and len(lines1) >= 2:
-        cand1 = np.array([l[0] for l in lines1], dtype=np.float32)
-        lengths1 = np.array([_line_length(l) for l in cand1], dtype=np.float32)
-        order1 = np.argsort(-lengths1)
-        cand1 = cand1[order1[: min(40, len(order1))]]
-        strict_pair = _select_best_pair(
-            cand=cand1,
-            min_len=min_len1,
+        min_len = max(20, int(min_len_ratio * scale))
+        lines = cv2.HoughLinesP(
+            edge,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=max(hough_thresh_min, int(hough_thresh_ratio * scale)),
+            minLineLength=min_len,
+            maxLineGap=max(max_gap_min, int(max_gap_ratio * scale)),
+        )
+        if lines is None or len(lines) < 2:
+            return None
+
+        cand = np.array([l[0] for l in lines], dtype=np.float32)
+        lengths = np.array([_line_length(l) for l in cand], dtype=np.float32)
+        order = np.argsort(-lengths)
+        cand = cand[order[: min(top_k, len(order))]]
+
+        return _select_best_pair(
+            cand=cand,
+            min_len=min_len,
             w=w,
             h=h,
+            max_angle_diff=max_angle_diff,
+            min_sep_ratio=min_sep_ratio,
+            max_sep_ratio=max_sep_ratio,
+            angle_penalty=angle_penalty,
+            sep_weight=sep_weight,
+            off_weight=off_weight,
+        )
+
+    # Optical profile (current strict thresholds)
+    if profile == "o":
+        return run_pass(
+            percentile=88,
+            t_min=35,
+            t_max=205,
+            open_k=3,
+            close_k=5,
+            min_len_ratio=0.45,
+            hough_thresh_ratio=0.14,
+            hough_thresh_min=55,
+            max_gap_ratio=0.04,
+            max_gap_min=10,
             max_angle_diff=7.0,
             min_sep_ratio=0.12,
             max_sep_ratio=0.45,
             angle_penalty=3.2,
             sep_weight=0.25,
             off_weight=0.08,
+            top_k=40,
         )
-        if strict_pair is not None:
-            return strict_pair
 
-    # --- Pass 2: fallback (recover weaker/shorter thermal-like edges, e.g. t2) ---
-    t2 = int(np.percentile(mag, 82))
-    t2 = max(24, min(185, t2))
-    edge2 = (mag >= t2).astype(np.uint8) * 255
-    edge2 = cv2.morphologyEx(
-        edge2, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1
+    # Thermal profile (old relaxed thresholds)
+    if profile == "t":
+        return run_pass(
+            percentile=82,
+            t_min=24,
+            t_max=185,
+            open_k=3,
+            close_k=7,
+            min_len_ratio=0.30,
+            hough_thresh_ratio=0.10,
+            hough_thresh_min=36,
+            max_gap_ratio=0.06,
+            max_gap_min=14,
+            max_angle_diff=12.0,
+            min_sep_ratio=0.06,
+            max_sep_ratio=0.65,
+            angle_penalty=2.1,
+            sep_weight=0.30,
+            off_weight=0.06,
+            top_k=60,
+        )
+
+    # Auto mode: strict then relaxed fallback
+    strict_pair = run_pass(
+        percentile=88,
+        t_min=35,
+        t_max=205,
+        open_k=3,
+        close_k=5,
+        min_len_ratio=0.45,
+        hough_thresh_ratio=0.14,
+        hough_thresh_min=55,
+        max_gap_ratio=0.04,
+        max_gap_min=10,
+        max_angle_diff=7.0,
+        min_sep_ratio=0.12,
+        max_sep_ratio=0.45,
+        angle_penalty=3.2,
+        sep_weight=0.25,
+        off_weight=0.08,
+        top_k=40,
     )
-    edge2 = cv2.morphologyEx(
-        edge2, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)), iterations=1
-    )
+    if strict_pair is not None:
+        return strict_pair
 
-    min_len2 = max(20, int(0.30 * scale))
-    lines2 = cv2.HoughLinesP(
-        edge2,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=max(36, int(0.10 * scale)),
-        minLineLength=min_len2,
-        maxLineGap=max(14, int(0.06 * scale)),
-    )
-    if lines2 is None or len(lines2) < 2:
-        return None
-
-    cand2 = np.array([l[0] for l in lines2], dtype=np.float32)
-    lengths2 = np.array([_line_length(l) for l in cand2], dtype=np.float32)
-    order2 = np.argsort(-lengths2)
-    cand2 = cand2[order2[: min(60, len(order2))]]
-
-    return _select_best_pair(
-        cand=cand2,
-        min_len=min_len2,
-        w=w,
-        h=h,
+    return run_pass(
+        percentile=82,
+        t_min=24,
+        t_max=185,
+        open_k=3,
+        close_k=7,
+        min_len_ratio=0.30,
+        hough_thresh_ratio=0.10,
+        hough_thresh_min=36,
+        max_gap_ratio=0.06,
+        max_gap_min=14,
         max_angle_diff=12.0,
         min_sep_ratio=0.06,
         max_sep_ratio=0.65,
         angle_penalty=2.1,
         sep_weight=0.30,
         off_weight=0.06,
+        top_k=60,
     )
 
 
@@ -285,7 +353,15 @@ def detect_battery_edges(path: Path, debug_dir: Optional[Path]) -> DetectionResu
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     roi, (rx1, ry1, rx2, ry2) = battery_roi(gray)
 
-    pair = detect_side_segments(roi)
+    stem_l = path.stem.lower()
+    if stem_l.startswith("o"):
+        profile = "o"
+    elif stem_l.startswith("t"):
+        profile = "t"
+    else:
+        profile = "auto"
+
+    pair = detect_side_segments(roi, profile=profile)
     if pair is None:
         return DetectionResult(image=str(path), ok=False, message="failed to find two side edge segments")
 
@@ -341,7 +417,7 @@ def detect_battery_edges(path: Path, debug_dir: Optional[Path]) -> DetectionResu
 
         cv2.putText(
             dbg,
-            "Detected battery side edges",
+            f"Detected battery side edges ({profile}-profile)",
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
