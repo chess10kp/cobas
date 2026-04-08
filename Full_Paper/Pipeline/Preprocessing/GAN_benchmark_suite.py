@@ -406,11 +406,51 @@ def fid_from_stats(mu1: np.ndarray, s1: np.ndarray, mu2: np.ndarray, s2: np.ndar
 # Main benchmark
 # ----------------------------
 
-def build_generator(model_path: Path, image_size: int, device: torch.device, n_res: int) -> nn.Module:
+def _extract_generator_state_from_checkpoint(
+    raw_state: object,
+    direction: str,
+) -> Dict[str, torch.Tensor]:
+    """
+    Accept either:
+    1) plain generator state_dict
+    2) wrapper with 'state_dict'
+    3) full training checkpoint from GAN_train_simple.py containing:
+       G_o2t, G_t2o, D_o, D_t, opt_G, opt_D_o, opt_D_t, ...
+    and extract the correct generator weights based on direction.
+    """
+    # unwrap common wrapper
+    if isinstance(raw_state, dict) and "state_dict" in raw_state and isinstance(raw_state["state_dict"], dict):
+        raw_state = raw_state["state_dict"]
+
+    if not isinstance(raw_state, dict):
+        raise RuntimeError("Unsupported checkpoint format: expected dict-like state.")
+
+    # Full training checkpoint format
+    if "G_o2t" in raw_state or "G_t2o" in raw_state:
+        key = "G_o2t" if direction == "o2t" else "G_t2o"
+        if key not in raw_state:
+            raise RuntimeError(
+                f"Checkpoint appears to be full training checkpoint but missing required key '{key}'."
+            )
+        gen_state = raw_state[key]
+        if not isinstance(gen_state, dict):
+            raise RuntimeError(f"Checkpoint key '{key}' is not a valid state_dict.")
+        return gen_state
+
+    # Already a plain generator state_dict
+    return raw_state  # type: ignore[return-value]
+
+
+def build_generator(
+    model_path: Path,
+    image_size: int,
+    device: torch.device,
+    n_res: int,
+    direction: str,
+) -> nn.Module:
     gen = Generator(in_nc=3, out_nc=3, n_res=n_res).to(device)
-    state = torch.load(model_path, map_location="cpu")
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
+    raw_state = torch.load(model_path, map_location="cpu")
+    state = _extract_generator_state_from_checkpoint(raw_state, direction=direction)
     gen.load_state_dict(state, strict=True)
     gen.eval()
     return gen
@@ -431,6 +471,7 @@ def benchmark(
     model_path: Path,
     input_dir: Path,
     target_dir: Path,
+    direction: str,
     image_size: int,
     batch_size: int,
     num_workers: int,
@@ -478,7 +519,13 @@ def benchmark(
         drop_last=False,
     )
 
-    gen = build_generator(model_path, image_size=image_size, device=device, n_res=n_res)
+    gen = build_generator(
+        model_path,
+        image_size=image_size,
+        device=device,
+        n_res=n_res,
+        direction=direction,
+    )
 
     lpips_net = None
     if use_lpips:
@@ -650,6 +697,7 @@ def main():
         model_path=model_path,
         input_dir=input_dir,
         target_dir=target_dir,
+        direction=args.direction,
         image_size=args.image_size,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
