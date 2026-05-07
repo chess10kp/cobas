@@ -7,6 +7,138 @@ Original file is located at
     https://colab.research.google.com/drive/1gEyfF_9GkLO-fmb_hykst1Gc5ZkgTpqp
 """
 
+# =============================================================================
+# THERMAL PREPROCESSING PLAN  (TODO #2 — fix bad thermal frames poisoning the model)
+# =============================================================================
+#
+# Camera:   Foxwell RT280 (320x240 LCD, 240x180 TISR, ironbow palette)
+# Raw src:  data/cobas/t20260325210628.mp4   -> 256x342 px, 25 fps, ~5055 frames
+# Raw pair: data/cobas/o.mp4                 -> 640x480 px,  ~34 fps
+# Synced:   data/cobas/t_synced.mp4          -> 640x480 px, 25 fps, 407 frames
+#           data/cobas/o_synced.mp4          -> 640x480 px, 25 fps, 407 frames
+#           (sync_metadata.json: 16.3 s overlap, common_fps=25.0, both rescaled
+#            to 640x480; the synced thermal is the raw 256x342 stream non-
+#            uniformly resized into 640x480 by the sync step)
+# Approach: FIXED-COORDINATE crop + ONCE-CALIBRATED affine transform between
+#           thermal and optical views. HUD lives in a fixed screen region, so
+#           a hardcoded ROI strips 100% of overlay with zero per-frame
+#           inference. Cell pixel-alignment requires an affine (scale +
+#           rotation + translation) because the two cameras observe the cell
+#           at different positions/orientations; we calibrate that affine
+#           ONCE on a reference pair and bake the matrix in as a constant.
+#
+# -----------------------------------------------------------------------------
+# 1. HUD INVENTORY (the canonical input is t_synced.mp4, 640x480 frame)
+# -----------------------------------------------------------------------------
+#   element              x1   y1   x2   y2     notes
+#   top-left artifact     0    0   35   45     dark patch in corner
+#   battery percentage  465   20  560   50     "97%"
+#   battery icon        565   18  632   48
+#   max temp readout    490   75  620  115     "26.0 C"
+#   color scale bar     588  122  618  322     vertical gradient
+#   min temp readout    490  335  620  375     "23.1 C"
+#   timestamp           205  410  435  458     red "00:03:06"
+#   zoom indicator       65  425  140  455     "x 1"
+#   emissivity           10  455  205  478     "epsilon = 0.95"
+#
+#   Largest HUD-free rectangle:        (5, 50) -> (480, 400)    = 475 x 350
+#   Battery cell sits inside that at:  (292, 208) -> (420, 380) ~ 128 x 172
+#
+#   (Reference values for raw 256x342 thermal kept for calibration use:
+#    HUD-free  (17, 33)->(193, 282), cell (119,143)->(168,263).)
+#
+# -----------------------------------------------------------------------------
+# 2. PIPELINE STAGES
+# -----------------------------------------------------------------------------
+#   stage A  decode synced videos -> 640x480 BGR frames (both streams,
+#            aligned in TIME via sync_metadata.json)
+#   stage B  HUD strip on thermal = crop to HUD-free rect (5, 50, 480, 400).
+#            Optical has no HUD; same stage is a no-op for optical.
+#   stage C  cell ROI crop, INDEPENDENT per view              [DECIDED — option 2]
+#              CycleGAN is unpaired, so we don't fit an inter-camera affine.
+#              Auto edge-detection on the synced thermal failed (mean 31 px
+#              reprojection error — detect_anode latches onto the bench edge
+#              in ironbow palette, not the cell sides). Sticking with two
+#              independent fixed cell bboxes:
+#                  OPTICAL_CELL_XYXY  -> crop on o_synced
+#                  THERMAL_CELL_XYXY  -> crop on hud-stripped t_synced
+#              Both are squared (pad shorter axis around the bbox center,
+#              clamp to canvas) so the resize to 256x256 is non-distorting.
+#              Frames remain TEMPORALLY paired (manifest.csv); they are NOT
+#              spatially pixel-aligned. If paired-pixel supervision is needed
+#              later, re-introduce stage C-affine via 4 manual correspondences.
+#   stage D  resize each crop to 256x256 with INTER_AREA on downscale,
+#            INTER_CUBIC on upscale. (Force the cell box to square earlier
+#            via symmetric pad on the shorter axis to avoid distortion.)
+#   stage E  save 3-channel pseudocolor PNG (lossless) under the output root
+#            (Q4: drive/MyDrive/images/battery/{opt,therm}/). Filename
+#            zero-padded frame index; manifest.csv records timestamps.
+#
+#   (stage F, deferred) when raw radiometric thermal becomes available, swap
+#   stage A for a radiometric decoder and emit single-channel float32 .npy
+#   targets; the same AFFINE_T2O + OPTICAL_CELL_XYXY apply unchanged.
+#
+# -----------------------------------------------------------------------------
+# 3. FRAME PAIRING / SYNC                              [DECIDED — Q1]
+# -----------------------------------------------------------------------------
+#   - Canonical inputs:  data/cobas/o_synced.mp4  +  data/cobas/t_synced.mp4
+#                        data/cobas/sync_metadata.json (read for frame map)
+#   - Raw o.mp4 / t20260325210628.mp4 are source material only, never
+#     consumed directly by the GAN preprocessor.
+#   - Frame pairing is read from sync_metadata.json; we do NOT re-derive it.
+#   - Manifest written alongside output (see section 5):
+#         frame_index,optical_source_frame,thermal_source_frame,
+#         optical_timestamp,thermal_timestamp
+#     -> gives timestamp traceability without polluting filenames.
+#
+# -----------------------------------------------------------------------------
+# 4. CONSTANTS TO BAKE IN (pseudocode)
+# -----------------------------------------------------------------------------
+#   FRAME_SIZE              = (640, 480)             # synced canvas
+#   THERMAL_HUD_FREE_XYXY   = (5, 50, 480, 400)      # on synced thermal
+#   OPTICAL_CELL_XYXY       = squared box around (232,162,531,262)
+#   THERMAL_CELL_XYXY       = squared box around (292,208,420,380)
+#                             (in synced thermal coords; HUD strip is a
+#                              superset, so the stage B crop is redundant
+#                              with stage C — keep both for clarity)
+#   GAN_INPUT_SIZE          = (256, 256)
+#   OUT_ROOT                = "drive/MyDrive/images/battery"  # Q4 (b)
+#   OUT_OPT, OUT_THERM      = "<OUT_ROOT>/opt", "<OUT_ROOT>/therm"
+#
+# -----------------------------------------------------------------------------
+# 5. DELIVERABLES
+# -----------------------------------------------------------------------------
+#   Pipeline/Preprocessing/thermal_preprocessing.py   <- new module
+#       - strip_hud(frame)                 stateless, fast
+#       - crop_cell(frame, xyxy)           stateless, fast
+#       - calibrate_rois(ref_optical, ref_thermal) -> (opt_xyxy, therm_xyxy)
+#                                          run once; result baked in as consts
+#       - preprocess_pair(o_synced_mp4, t_synced_mp4, sync_metadata_json,
+#                         out_root) -> writes both streams + manifest atomically
+#       - main(): default args = data/cobas/{o_synced.mp4, t_synced.mp4,
+#                                            sync_metadata.json}
+#
+#   Output layout under <out_root>/:                   [DECIDED — Q3]
+#       optical/frame_00000.png   ...   frame_NNNNN.png
+#       thermal/frame_00000.png   ...   frame_NNNNN.png
+#       manifest.csv  with columns:
+#         frame_index,optical_source_frame,thermal_source_frame,
+#         optical_timestamp,thermal_timestamp
+#       _qa.png       4x4 grid of (raw thermal | hud-stripped | cell crop |
+#                     final 256x256) over 16 random frames, for eyeballing
+#                     that no HUD survives.
+#
+# -----------------------------------------------------------------------------
+# 6. OPEN QUESTIONS
+# -----------------------------------------------------------------------------
+#   Q1. [DECIDED] sync source = *_synced.mp4 + sync_metadata.json.
+#   Q2. [DECIDED] one calibrated box, with rig-drift guard fallback (see 2C).
+#   Q3. [DECIDED] frame_NNNNN.png + manifest.csv for timestamps.
+#   Q4. [DECIDED] output root = drive/MyDrive/images/battery/{opt,therm}/
+#       so the existing Colab GAN dataloader picks files up with no code
+#       change. Path is overridable via --out-root for local runs.
+# =============================================================================
+
 from google.colab import drive
 drive.mount('/content/drive/')
 
