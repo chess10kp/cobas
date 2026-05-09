@@ -10,15 +10,15 @@ import matplotlib.pyplot as plt
 # USER CONFIGURATION
 # ==========================================================
 
-VIDEO_PATH = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/BeaconDataset/official00/test/raw_videos/100p_test.MOV"
-OUTPUT_VIDEO = "/Users/pedropaiva/Documents/Dev/Research/CoBasE-Energy/cobas/Acoustic_Dataset_Collection/BeaconDataset/official00/test/crpd_raw_videos/crpd_100p_test.MOV"
+VIDEO_PATH = "/Users/pedropaiva/Dev/Research/CoBasE-Energy/cobasFork/Full_Paper/AcousticTests/NewMetrics/croppingAndAlignmentTest_phone_000/raw_videos/100soc.MOV"
+OUTPUT_VIDEO = "/Users/pedropaiva/Dev/Research/CoBasE-Energy/cobasFork/Full_Paper/AcousticTests/NewMetrics/croppingAndAlignmentTest_phone_000/cropped_videos/cropped_100soc.MOV"
 TEMP_AUDIO = "temp_audio.wav"
 
 SAMPLE_RATE = 48000
 
 BEACON_FREQ = 10000        # Hz
 BEACON_BW = 300            # ± Hz around beacon frequency
-MIN_BEACON_DURATION = 2.5  # seconds
+MIN_BEACON_DURATION = 2.5  # seconds DO NOT TOUCH
 THRESHOLD_RATIO = 0.3      # relative energy threshold
 
 # ==========================================================
@@ -80,7 +80,9 @@ def plotting_env_threshold(env, threshold, sr, start, end):
     plt.title("Beacon Envelope and Detection Threshold")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    # plt.show()
+    OUTPUT_IMG = OUTPUT_VIDEO[:-3] + "png"
+    plt.savefig(OUTPUT_IMG)
 
 # ==========================================================
 # BEACON DETECTION (CORE LOGIC)
@@ -114,7 +116,7 @@ def detect_beacons(audio, sr):
     # print(t_BEGIN_beacon_end)
     # print(t_END_beacon_start)
     # print(t_BEGIN_beacon_end == t_END_beacon_start)
-    print(t_start, t_end)
+    print(f"START: {t_start} | END: {t_end} | DIFF: {t_end-t_start}")
 
     plotting_env_threshold(env, threshold, sr, t_start, t_end)
 
@@ -129,9 +131,9 @@ def crop_video(video_path, output_path, t_start, t_end):
         [
             "ffmpeg",
             "-y",
+            "-i", video_path,
             "-ss", f"{t_start:.6f}",
             "-to", f"{t_end:.6f}",
-            "-i", video_path,
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-crf", "18",

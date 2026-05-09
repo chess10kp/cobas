@@ -72,12 +72,12 @@ if __name__ == "__main__":
         fmax=FMAX
     )
 
-    # plt.figure(figsize=(10, 6))
-    # plt.imshow(s_ultra, aspect='auto', origin='lower', cmap='inferno')
-    # plt.colorbar()
-    # plt.title("Ultrasonic Linear-Frequency Spectrogram (15–19.2 kHz)")
+    plt.figure(figsize=(10, 6))
+    plt.imshow(s_ultra, aspect='auto', origin='lower', cmap='inferno')
+    plt.colorbar()
+    plt.title("Ultrasonic Linear-Frequency Spectrogram (15–19.2 kHz)")
     # plt.savefig("stft_test", dpi=300, bbox_inches="tight")
-    # plt.show()
+    plt.show()
 
 
 
@@ -88,34 +88,6 @@ if __name__ == "__main__":
     #            cmap='inferno')
     # plt.colorbar()
     # plt.show()
-
-    plt.figure(figsize=(10, 6), constrained_layout=False)
-    times = np.arange(s_ultra.shape[1]) * HOP_LENGTH / SAMPLING_RATE
-    print(times)
-    plt.imshow(
-        s_ultra,
-        aspect='auto',
-        origin='lower',
-        extent=[times[0], times[-1], FMIN, FMAX],
-        cmap='inferno'
-    )
-
-    plt.yticks(
-        np.arange(FMIN, FMAX + 1, 500)
-    )
-
-    plt.xticks(
-        np.arange(0, times[-1] + 0.001, 0.25)
-    )
-
-    plt.ylabel("Frequency (Hz)")
-    plt.xlabel("Time (s)")
-    plt.colorbar(label="Magnitude (dB re. max)", fraction=0.046, pad=0.02)
-    plt.savefig("paper/notes/15000_19200_labeled", dpi=300, bbox_inches='tight', pad_inches=0.2)
-    # plt.show()
-
-
-
 
 
 
@@ -131,7 +103,7 @@ if __name__ == "__main__":
     # ax.set_title("")
     # for spine in ax.spines.values():
     #     spine.set_visible(False)
-
+    #
     # plt.savefig("ftest1.png", dpi=300, bbox_inches='tight', pad_inches=0)
     # plt.close(fig)
     # plt.show()
